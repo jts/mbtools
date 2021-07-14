@@ -3,8 +3,46 @@
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 extern crate clap;
+use std::time::{Duration, Instant};
+use std::collections::HashMap;
 use clap::{Arg, App, SubCommand, value_t};
-use rust_htslib::{bam, bam::Read, bam::record::Aux};
+use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*};
+
+//
+pub struct AlignedPair
+{
+    reference_index: usize,
+    read_index: usize
+}
+
+fn calculate_aligned_pairs(record: &bam::Record) -> Vec::<AlignedPair> {
+    let mut aligned_pairs = Vec::<AlignedPair>::new();
+
+    let mut current_read_index :usize = 0;
+    let mut current_reference_index :usize = record.pos() as usize;
+
+    for c in record.cigar().iter() {
+
+        let (aligned, reference_stride, read_stride) = match *c {
+            Match(_) | Equal(_) | Diff(_) => (true, 1, 1),
+            Del(_) => (false, 1, 0),
+            Ins(_) => (false, 0, 1),
+            SoftClip(_) => (false, 0, 1),
+            HardClip(_) | Pad(_) => (false, 0, 0),
+            RefSkip(_) => (false, 1, 0)
+        };
+
+        for _i in 0 .. c.len() {
+            if aligned {
+                aligned_pairs.push( AlignedPair{reference_index:current_reference_index, read_index:current_read_index} );
+            }
+
+            current_reference_index += reference_stride;
+            current_read_index += read_stride;
+        }
+    }
+    aligned_pairs
+}
 
 // struct storing the modifications 
 pub struct ReadModifications
@@ -12,18 +50,22 @@ pub struct ReadModifications
     canonical_base: char,
     modified_base: char,
     modification_indices: Vec<usize>,
-    modification_probabilities: Vec<f64>
+    modification_probabilities: Vec<f64>,
+    read_to_reference_map: HashMap<usize, usize>,
+    aligned_pairs: Vec<AlignedPair>
 }
 
 impl ReadModifications
 {
     pub fn from_bam_record(record: &bam::Record) -> Self {
-        println!("Parsing bam record");
+        //println!("Parsing bam record");
         let mut rm = ReadModifications {
             canonical_base: 'x',
             modified_base: 'x',
             modification_indices: vec![],
-            modification_probabilities: vec![]
+            modification_probabilities: vec![],
+            read_to_reference_map: HashMap::new(),
+            aligned_pairs: vec![]
         };
 
         // TODO: remove when we switch bam_seq to match original strand of read
@@ -32,7 +74,7 @@ impl ReadModifications
         //
         let bam_seq = record.seq().as_bytes();
         let mut modified_seq = bam_seq.clone();
-        let qname = std::str::from_utf8(record.qname()).unwrap();
+        //let qname = std::str::from_utf8(record.qname()).unwrap();
 
         // parse probabilities
         if let Ok(Aux::ArrayU8(array)) = record.aux(b"Ml") {
@@ -60,9 +102,15 @@ impl ReadModifications
                 for token in mm_str[4..].split(",") {
                     canonical_count += token.parse::<usize>().unwrap();
                     rm.modification_indices.push(canonical_indices[canonical_count]);
-                    println!("token {} count: {}", token, canonical_count);
                     canonical_count += 1;
                 }
+            }
+
+            // extract the alignment from the bam record
+            rm.aligned_pairs = calculate_aligned_pairs(record);
+
+            for t in &rm.aligned_pairs {
+                rm.read_to_reference_map.insert(t.read_index, t.reference_index);
             }
 
             // construct modified sequence (debug)
@@ -71,7 +119,7 @@ impl ReadModifications
             }
         }
 
-        println!("Parsed {} -> {} modifications for {}\n{}", rm.canonical_base, rm.modified_base, qname, std::str::from_utf8(&modified_seq).unwrap());
+        //println!("Parsed {} -> {} modifications for {}\n{}", rm.canonical_base, rm.modified_base, qname, std::str::from_utf8(&modified_seq).unwrap());
         rm
     }
 }
@@ -109,9 +157,37 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
     let mut bam = bam::Reader::from_path(input_bam).unwrap();
     //let header = bam::Header::from_template(bam.header());
 
+    // map from (tid, position) -> (methylated_reads, total_reads)
+    let mut reference_modifications = HashMap::<(i32, usize), (usize, usize)>::new();
+
     //
+    let start = Instant::now();
+    let mut reads_processed = 0;
     for r in bam.records() {
         let record = r.unwrap();
-        let modifications = ReadModifications::from_bam_record(&record);
+        let tid = record.tid();
+        let rm = ReadModifications::from_bam_record(&record);
+        //for (mod_index, mod_probability) in zip(rm.modification_indices.iter(), rm.modification_probabilities.iter()) {
+        for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
+
+            if (*mod_probability > threshold) || ((1.0 - mod_probability) > threshold) {
+                let reference_position = rm.read_to_reference_map.get(mod_index).expect("Unable to find reference position for read base");
+                let mut e = reference_modifications.entry( (tid, *reference_position) ).or_insert( (0, 0) );
+                if *mod_probability > 0.5 {
+                    (*e).0 += 1;
+                }
+                (*e).1 += 1;
+                //println!("processing {} i:{} p:{} ({} {})", reference_position, mod_index, mod_probability, e.0, e.1);
+            }
+        }
+
+        reads_processed += 1;
     }
+
+    //
+    for ( (tid, position), (methylated_reads, total_reads) ) in reference_modifications {
+        println!("{}\t{}\t{}\t{}\t{}", tid, position, methylated_reads, total_reads, methylated_reads as f64 / total_reads as f64);
+    }
+    let duration = start.elapsed();
+    eprintln!("Processed {} reads in {:?}", reads_processed, duration);
 }
