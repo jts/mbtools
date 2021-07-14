@@ -43,10 +43,8 @@ impl ReadModifications
 
         if let Ok(Aux::String(mm_str)) = record.aux(b"Mm") {
 
-            let mm_str_b = mm_str.as_bytes();
-            rm.canonical_base = mm_str_b[0] as char;
-            rm.modified_base = mm_str_b[2] as char;
-
+            rm.canonical_base = mm_str.as_bytes()[0] as char;
+            rm.modified_base = mm_str.as_bytes()[2] as char;
 
             // calculate the index in the read of each canonical base
             let mut canonical_indices = Vec::<usize>::new();
@@ -56,8 +54,7 @@ impl ReadModifications
                 }
             }
 
-            // parse the modification string and transform it into indices
-            // into the read sequence
+            // parse the modification string and transform it into indices in the read
             let mut canonical_count : usize = 0;
             if mm_str.len() > 4 {
                 for token in mm_str[4..].split(",") {
