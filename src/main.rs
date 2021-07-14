@@ -3,8 +3,8 @@
 // Written by Jared Simpson (jared.simpson@oicr.on.ca)
 //---------------------------------------------------------
 extern crate clap;
-use std::time::{Duration, Instant};
-use std::collections::HashMap;
+use std::time::{Instant};
+use fnv::{FnvHashMap, FnvHashSet};
 use clap::{Arg, App, SubCommand, value_t};
 use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*};
 
@@ -51,8 +51,7 @@ pub struct ReadModifications
     modified_base: char,
     modification_indices: Vec<usize>,
     modification_probabilities: Vec<f64>,
-    read_to_reference_map: HashMap<usize, usize>,
-    aligned_pairs: Vec<AlignedPair>
+    read_to_reference_map: FnvHashMap<usize, usize>
 }
 
 impl ReadModifications
@@ -64,8 +63,7 @@ impl ReadModifications
             modified_base: 'x',
             modification_indices: vec![],
             modification_probabilities: vec![],
-            read_to_reference_map: HashMap::new(),
-            aligned_pairs: vec![]
+            read_to_reference_map: FnvHashMap::default()
         };
 
         // TODO: remove when we switch bam_seq to match original strand of read
@@ -106,11 +104,20 @@ impl ReadModifications
                 }
             }
 
-            // extract the alignment from the bam record
-            rm.aligned_pairs = calculate_aligned_pairs(record);
+            // temporary set of reference positions with a modification
+            let mut read_modification_set = FnvHashSet::<usize>::default();
+            for i in &rm.modification_indices {
+                read_modification_set.insert(*i);
+            }
 
-            for t in &rm.aligned_pairs {
-                rm.read_to_reference_map.insert(t.read_index, t.reference_index);
+            // extract the alignment from the bam record
+            let aligned_pairs = calculate_aligned_pairs(record);
+
+            rm.read_to_reference_map.reserve(rm.modification_indices.len());
+            for t in &aligned_pairs {
+                if read_modification_set.contains(&t.read_index) {
+                    rm.read_to_reference_map.insert(t.read_index, t.reference_index);
+                }
             }
 
             // construct modified sequence (debug)
@@ -158,7 +165,7 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
     //let header = bam::Header::from_template(bam.header());
 
     // map from (tid, position) -> (methylated_reads, total_reads)
-    let mut reference_modifications = HashMap::<(i32, usize), (usize, usize)>::new();
+    let mut reference_modifications = FnvHashMap::<(i32, usize), (usize, usize)>::default();
 
     //
     let start = Instant::now();

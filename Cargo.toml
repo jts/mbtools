@@ -9,3 +9,4 @@ edition = "2018"
 [dependencies]
 clap = "2.33.0"
 rust-htslib = { version = "*", default-features = false }
+fnv = "1.0.3"
