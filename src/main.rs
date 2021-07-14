@@ -4,7 +4,8 @@
 //---------------------------------------------------------
 extern crate clap;
 use std::time::{Instant};
-use fnv::{FnvHashMap, FnvHashSet};
+//use fnv::{FnvHashMap, FnvHashSet};
+use hashbrown::{HashMap, HashSet};
 use clap::{Arg, App, SubCommand, value_t};
 use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*};
 
@@ -51,7 +52,7 @@ pub struct ReadModifications
     modified_base: char,
     modification_indices: Vec<usize>,
     modification_probabilities: Vec<f64>,
-    read_to_reference_map: FnvHashMap<usize, usize>
+    read_to_reference_map: HashMap<usize, usize>
 }
 
 impl ReadModifications
@@ -63,7 +64,7 @@ impl ReadModifications
             modified_base: 'x',
             modification_indices: vec![],
             modification_probabilities: vec![],
-            read_to_reference_map: FnvHashMap::default()
+            read_to_reference_map: HashMap::new()
         };
 
         // TODO: remove when we switch bam_seq to match original strand of read
@@ -105,7 +106,7 @@ impl ReadModifications
             }
 
             // temporary set of reference positions with a modification
-            let mut read_modification_set = FnvHashSet::<usize>::default();
+            let mut read_modification_set = HashSet::<usize>::new();
             for i in &rm.modification_indices {
                 read_modification_set.insert(*i);
             }
@@ -165,7 +166,7 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
     //let header = bam::Header::from_template(bam.header());
 
     // map from (tid, position) -> (methylated_reads, total_reads)
-    let mut reference_modifications = FnvHashMap::<(i32, usize), (usize, usize)>::default();
+    let mut reference_modifications = HashMap::<(i32, usize), (usize, usize)>::new();
 
     //
     let start = Instant::now();
