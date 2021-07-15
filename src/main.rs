@@ -4,8 +4,8 @@
 //---------------------------------------------------------
 extern crate clap;
 use std::time::{Instant};
-//use fnv::{FnvHashMap, FnvHashSet};
 use hashbrown::{HashMap, HashSet};
+use itertools::Itertools;
 use clap::{Arg, App, SubCommand, value_t};
 use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*};
 
@@ -163,7 +163,7 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
     println!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).unwrap();
-    //let header = bam::Header::from_template(bam.header());
+    let header = bam::Header::from_template(bam.header());
 
     // map from (tid, position) -> (methylated_reads, total_reads)
     let mut reference_modifications = HashMap::<(i32, usize), (usize, usize)>::new();
@@ -193,9 +193,19 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
     }
 
     //
+    let header_view = bam::HeaderView::from_header(&header);
+    println!("chromosome\tposition\tmodified_reads\ttotal_reads\tmodified_frequency");
+    for key in reference_modifications.keys().sorted() {
+        let (tid, position) = key;
+        let contig = String::from_utf8_lossy(header_view.tid2name(*tid as u32));
+        let (methylated_reads, total_reads) = reference_modifications.get( key ).unwrap();
+        println!("{}\t{}\t{}\t{}\t{:.3}", contig, position, methylated_reads, total_reads, *methylated_reads as f64 / *total_reads as f64);
+    }
+    /*
     for ( (tid, position), (methylated_reads, total_reads) ) in reference_modifications {
         println!("{}\t{}\t{}\t{}\t{}", tid, position, methylated_reads, total_reads, methylated_reads as f64 / total_reads as f64);
     }
+    */
     let duration = start.elapsed();
     eprintln!("Processed {} reads in {:?}", reads_processed, duration);
 }
