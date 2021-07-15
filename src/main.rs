@@ -147,6 +147,11 @@ fn main() {
         .about("Toolkit for working with modification bam files")
         .subcommand(SubCommand::with_name("modification-frequency")
                 .about("calculate the frequency of modified bases per position of the genome")
+                .arg(Arg::with_name("collapse-strands")
+                    .short("c")
+                    .long("collapse-strands")
+                    .takes_value(false)
+                    .help("merge the calls for the forward and negative strand into a single value"))
                 .arg(Arg::with_name("probability-threshold")
                     .short("t")
                     .long("probability-threshold")
@@ -163,11 +168,11 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
-        calculate_modification_frequency(threshold, matches.value_of("input-bam").unwrap())
+        calculate_modification_frequency(threshold, matches.is_present("collapse-strands"), matches.value_of("input-bam").unwrap())
     }
 }
 
-fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
+fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, input_bam: &str) {
     println!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).unwrap();
@@ -193,8 +198,14 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
         for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
 
             if (*mod_probability > threshold) || ((1.0 - mod_probability) > threshold) {
-                let reference_position = rm.read_to_reference_map.get(mod_index).expect(format!("Unable to find reference position for read base {}", mod_index).as_str());
-                let mut e = reference_modifications.entry( (tid, *reference_position, rm.strand) ).or_insert( (0, 0) );
+                let mut reference_position = rm.read_to_reference_map.get(mod_index).
+                    expect(format!("Unable to find reference position for read base {}", mod_index).as_str()).clone();
+                let mut strand = rm.strand;
+                if collapse_strands && strand == '-' {
+                    reference_position -= 1; // TODO: this only works for CpG
+                    strand = '+';
+                }
+                let mut e = reference_modifications.entry( (tid, reference_position, strand) ).or_insert( (0, 0) );
                 if *mod_probability > 0.5 {
                     (*e).0 += 1;
                 }
