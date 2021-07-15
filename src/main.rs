@@ -173,7 +173,7 @@ fn main() {
 }
 
 fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, input_bam: &str) {
-    println!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
+    eprintln!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).unwrap();
     let header = bam::Header::from_template(bam.header());
@@ -221,9 +221,9 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, inpu
     let mut sum_modified = 0;
 
     let header_view = bam::HeaderView::from_header(&header);
-    println!("chromosome\tposition\tmodified_reads\ttotal_reads\tmodified_frequency");
+    println!("chromosome\tposition\tstrand\tmodified_reads\ttotal_reads\tmodified_frequency");
     for key in reference_modifications.keys().sorted() {
-        let (tid, strand, position) = key;
+        let (tid, position, strand) = key;
         let contig = String::from_utf8_lossy(header_view.tid2name(*tid as u32));
         let (modified_reads, total_reads) = reference_modifications.get( key ).unwrap();
         println!("{}\t{}\t{}\t{}\t{}\t{:.3}", contig, position, strand, modified_reads, total_reads, *modified_reads as f64 / *total_reads as f64);
