@@ -8,6 +8,7 @@ use hashbrown::{HashMap, HashSet};
 use itertools::Itertools;
 use clap::{Arg, App, SubCommand, value_t};
 use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*};
+use bio::alphabets;
 
 //
 pub struct AlignedPair
@@ -50,6 +51,7 @@ pub struct ReadModifications
 {
     canonical_base: char,
     modified_base: char,
+    strand: char,
     modification_indices: Vec<usize>,
     modification_probabilities: Vec<f64>,
     read_to_reference_map: HashMap<usize, usize>
@@ -62,18 +64,19 @@ impl ReadModifications
         let mut rm = ReadModifications {
             canonical_base: 'x',
             modified_base: 'x',
+            strand: '+',
             modification_indices: vec![],
             modification_probabilities: vec![],
             read_to_reference_map: HashMap::new()
         };
 
-        // TODO: remove when we switch bam_seq to match original strand of read
-        assert_eq!(record.is_reverse(), false);
-
-        //
-        let bam_seq = record.seq().as_bytes();
-        let mut modified_seq = bam_seq.clone();
-        //let qname = std::str::from_utf8(record.qname()).unwrap();
+        // this SEQ is in the same orientation as the reference,
+        // revcomp it here to make it the original orientation that the instrument read
+        let mut instrument_read_seq = record.seq().as_bytes();
+        if record.is_reverse() {
+            instrument_read_seq = alphabets::dna::revcomp(instrument_read_seq);
+            rm.strand = '-';
+        }
 
         // parse probabilities
         if let Ok(Aux::ArrayU8(array)) = record.aux(b"Ml") {
@@ -89,7 +92,7 @@ impl ReadModifications
 
             // calculate the index in the read of each canonical base
             let mut canonical_indices = Vec::<usize>::new();
-            for (index, base) in bam_seq.iter().enumerate() {
+            for (index, base) in instrument_read_seq.iter().enumerate() {
                 if *base as char == rm.canonical_base {
                     canonical_indices.push(index)
                 }
@@ -105,25 +108,30 @@ impl ReadModifications
                 }
             }
 
+            // extract the alignment from the bam record
+            let mut aligned_pairs = calculate_aligned_pairs(record);
+
+            // aligned_pairs stores the index of the read along SEQ, which may be
+            // reverse complemented. switch the coordinates here to be the original
+            // sequencing direction to be consistent with the Mm/Ml tag.
+            let seq_len = instrument_read_seq.len();
+            if record.is_reverse() {
+                for t in &mut aligned_pairs {
+                    t.read_index = seq_len - t.read_index - 1;
+                }
+            }
+
             // temporary set of reference positions with a modification
             let mut read_modification_set = HashSet::<usize>::new();
             for i in &rm.modification_indices {
                 read_modification_set.insert(*i);
             }
 
-            // extract the alignment from the bam record
-            let aligned_pairs = calculate_aligned_pairs(record);
-
             rm.read_to_reference_map.reserve(rm.modification_indices.len());
             for t in &aligned_pairs {
                 if read_modification_set.contains(&t.read_index) {
                     rm.read_to_reference_map.insert(t.read_index, t.reference_index);
                 }
-            }
-
-            // construct modified sequence (debug)
-            for index in &rm.modification_indices {
-                modified_seq[*index] = rm.modified_base as u8;
             }
         }
 
@@ -166,26 +174,31 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
     let header = bam::Header::from_template(bam.header());
 
     // map from (tid, position) -> (methylated_reads, total_reads)
-    let mut reference_modifications = HashMap::<(i32, usize), (usize, usize)>::new();
+    let mut reference_modifications = HashMap::<(i32, usize, char), (usize, usize)>::new();
 
     //
     let start = Instant::now();
     let mut reads_processed = 0;
     for r in bam.records() {
         let record = r.unwrap();
+
+        // records that are missing the SEQ field cannot be processed
+        if record.seq().len() == 0 {
+            continue;
+        }
+
         let tid = record.tid();
         let rm = ReadModifications::from_bam_record(&record);
         //for (mod_index, mod_probability) in zip(rm.modification_indices.iter(), rm.modification_probabilities.iter()) {
         for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
 
             if (*mod_probability > threshold) || ((1.0 - mod_probability) > threshold) {
-                let reference_position = rm.read_to_reference_map.get(mod_index).expect("Unable to find reference position for read base");
-                let mut e = reference_modifications.entry( (tid, *reference_position) ).or_insert( (0, 0) );
+                let reference_position = rm.read_to_reference_map.get(mod_index).expect(format!("Unable to find reference position for read base {}", mod_index).as_str());
+                let mut e = reference_modifications.entry( (tid, *reference_position, rm.strand) ).or_insert( (0, 0) );
                 if *mod_probability > 0.5 {
                     (*e).0 += 1;
                 }
                 (*e).1 += 1;
-                //println!("processing {} i:{} p:{} ({} {})", reference_position, mod_index, mod_probability, e.0, e.1);
             }
         }
 
@@ -199,10 +212,10 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
     let header_view = bam::HeaderView::from_header(&header);
     println!("chromosome\tposition\tmodified_reads\ttotal_reads\tmodified_frequency");
     for key in reference_modifications.keys().sorted() {
-        let (tid, position) = key;
+        let (tid, strand, position) = key;
         let contig = String::from_utf8_lossy(header_view.tid2name(*tid as u32));
         let (modified_reads, total_reads) = reference_modifications.get( key ).unwrap();
-        println!("{}\t{}\t{}\t{}\t{:.3}", contig, position, modified_reads, total_reads, *modified_reads as f64 / *total_reads as f64);
+        println!("{}\t{}\t{}\t{}\t{}\t{:.3}", contig, position, strand, modified_reads, total_reads, *modified_reads as f64 / *total_reads as f64);
     
         sum_reads += total_reads;
         sum_modified += modified_reads;

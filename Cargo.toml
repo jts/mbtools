@@ -11,3 +11,4 @@ clap = "2.33.0"
 rust-htslib = { version = "0.38.2", default-features = false }
 hashbrown = "0.3"
 itertools = "*"
+bio = "*"
