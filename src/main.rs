@@ -193,19 +193,23 @@ fn calculate_modification_frequency(threshold: f64, input_bam: &str) {
     }
 
     //
+    let mut sum_reads = 0;
+    let mut sum_modified = 0;
+
     let header_view = bam::HeaderView::from_header(&header);
     println!("chromosome\tposition\tmodified_reads\ttotal_reads\tmodified_frequency");
     for key in reference_modifications.keys().sorted() {
         let (tid, position) = key;
         let contig = String::from_utf8_lossy(header_view.tid2name(*tid as u32));
-        let (methylated_reads, total_reads) = reference_modifications.get( key ).unwrap();
-        println!("{}\t{}\t{}\t{}\t{:.3}", contig, position, methylated_reads, total_reads, *methylated_reads as f64 / *total_reads as f64);
+        let (modified_reads, total_reads) = reference_modifications.get( key ).unwrap();
+        println!("{}\t{}\t{}\t{}\t{:.3}", contig, position, modified_reads, total_reads, *modified_reads as f64 / *total_reads as f64);
+    
+        sum_reads += total_reads;
+        sum_modified += modified_reads;
     }
-    /*
-    for ( (tid, position), (methylated_reads, total_reads) ) in reference_modifications {
-        println!("{}\t{}\t{}\t{}\t{}", tid, position, methylated_reads, total_reads, methylated_reads as f64 / total_reads as f64);
-    }
-    */
+    
     let duration = start.elapsed();
-    eprintln!("Processed {} reads in {:?}", reads_processed, duration);
+    let mean_depth = sum_reads as f64 / reference_modifications.keys().len() as f64;
+    let mean_frequency = sum_modified as f64 / sum_reads as f64;
+    eprintln!("Processed {} reads in {:?}. Mean depth: {:.2} mean modification frequency: {:.2}", reads_processed, duration, mean_depth, mean_frequency);
 }
