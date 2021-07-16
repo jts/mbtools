@@ -175,7 +175,6 @@ fn main() {
 fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, input_bam: &str) {
     eprintln!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
-    let ambiguous_range = 1.0 - threshold .. threshold;
     let mut bam = bam::Reader::from_path(input_bam).unwrap();
     let header = bam::Header::from_template(bam.header());
 
@@ -197,8 +196,9 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, inpu
         let rm = ReadModifications::from_bam_record(&record);
         //for (mod_index, mod_probability) in zip(rm.modification_indices.iter(), rm.modification_probabilities.iter()) {
         for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
-
-            if !ambiguous_range.contains(mod_probability) {
+            let is_modified_call = *mod_probability > 0.5;
+            let probability_correct = if is_modified_call { *mod_probability } else { 1.0 - *mod_probability };
+            if probability_correct > threshold {
                 let mut reference_position = rm.read_to_reference_map.get(mod_index)
                     .expect(format!("Unable to find reference position for read base {}", mod_index).as_str()).clone();
                 let mut strand = rm.strand;
@@ -207,9 +207,7 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, inpu
                     strand = '+';
                 }
                 let mut e = reference_modifications.entry( (tid, reference_position, strand) ).or_insert( (0, 0) );
-                if *mod_probability > 0.5 {
-                    (*e).0 += 1;
-                }
+                (*e).0 += is_modified_call as usize;
                 (*e).1 += 1;
             }
         }
