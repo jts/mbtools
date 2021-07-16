@@ -106,12 +106,10 @@ impl ReadModifications
 
                 // parse the modification string and transform it into indices in the read
                 let mut canonical_count : usize = 0;
-                if mm_str.len() > 4 {
-                    for token in mm_str[4..].split(",") {
-                        canonical_count += token.parse::<usize>().unwrap();
-                        rm.modification_indices.push(canonical_indices[canonical_count]);
-                        canonical_count += 1;
-                    }
+                for token in mm_str.split(",").skip(1) {
+                    canonical_count += token.parse::<usize>().unwrap();
+                    rm.modification_indices.push(canonical_indices[canonical_count]);
+                    canonical_count += 1;
                 }
 
                 // extract the alignment from the bam record
@@ -182,7 +180,7 @@ fn main() {
 fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, input_bam: &str) {
     eprintln!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
-    let mut bam = bam::Reader::from_path(input_bam).unwrap();
+    let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
     let header = bam::Header::from_template(bam.header());
 
     // map from (tid, position, strand) -> (methylated_reads, total_reads)
@@ -233,8 +231,7 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, inpu
         sum_modified += modified_reads;
     }
     
-    let duration = start.elapsed();
     let mean_depth = sum_reads as f64 / reference_modifications.keys().len() as f64;
     let mean_frequency = sum_modified as f64 / sum_reads as f64;
-    eprintln!("Processed {} reads in {:?}. Mean depth: {:.2} mean modification frequency: {:.2}", reads_processed, duration, mean_depth, mean_frequency);
+    eprintln!("Processed {} reads in {:?}. Mean depth: {:.2} mean modification frequency: {:.2}", reads_processed, start.elapsed(), mean_depth, mean_frequency);
 }
