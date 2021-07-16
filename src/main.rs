@@ -63,86 +63,85 @@ impl ReadModifications
         
         // records that are missing the SEQ field cannot be processed
         if record.seq().len() == 0 {
-            None
-        } else {
-
-            //println!("Parsing bam record");
-            let mut rm = ReadModifications {
-                canonical_base: 'x',
-                modified_base: 'x',
-                strand: '+',
-                modification_indices: vec![],
-                modification_probabilities: vec![],
-                read_to_reference_map: HashMap::new()
-            };
-
-            // this SEQ is in the same orientation as the reference,
-            // revcomp it here to make it the original orientation that the instrument read
-            let mut instrument_read_seq = record.seq().as_bytes();
-            if record.is_reverse() {
-                instrument_read_seq = alphabets::dna::revcomp(instrument_read_seq);
-                rm.strand = '-';
-            }
-
-            // parse probabilities
-            if let Ok(Aux::ArrayU8(array)) = record.aux(b"Ml") {
-                for encoded_probability in array.iter() {
-                    rm.modification_probabilities.push(encoded_probability as f64 / 255.0);
-                }
-            }
-
-            if let Ok(Aux::String(mm_str)) = record.aux(b"Mm") {
-
-                rm.canonical_base = mm_str.as_bytes()[0] as char;
-                rm.modified_base = mm_str.as_bytes()[2] as char;
-
-                // calculate the index in the read of each canonical base
-                let mut canonical_indices = Vec::<usize>::new();
-                for (index, base) in instrument_read_seq.iter().enumerate() {
-                    if *base as char == rm.canonical_base {
-                        canonical_indices.push(index)
-                    }
-                }
-
-                // parse the modification string and transform it into indices in the read
-                let mut canonical_count : usize = 0;
-                assert_eq!(mm_str.matches(';').count(), 1);
-                for token in mm_str.split(';').next().unwrap().split(',').skip(1) {
-                    canonical_count += token.parse::<usize>().unwrap();
-                    rm.modification_indices.push(canonical_indices[canonical_count]);
-                    canonical_count += 1;
-                }
-
-                // extract the alignment from the bam record
-                let mut aligned_pairs = calculate_aligned_pairs(record);
-
-                // aligned_pairs stores the index of the read along SEQ, which may be
-                // reverse complemented. switch the coordinates here to be the original
-                // sequencing direction to be consistent with the Mm/Ml tag.
-                let seq_len = instrument_read_seq.len();
-                if record.is_reverse() {
-                    for t in &mut aligned_pairs {
-                        t.read_index = seq_len - t.read_index - 1;
-                    }
-                }
-
-                // temporary set of reference positions with a modification
-                let mut read_modification_set = HashSet::<usize>::new();
-                for i in &rm.modification_indices {
-                    read_modification_set.insert(*i);
-                }
-
-                rm.read_to_reference_map.reserve(rm.modification_indices.len());
-                for t in &aligned_pairs {
-                    if read_modification_set.contains(&t.read_index) {
-                        rm.read_to_reference_map.insert(t.read_index, t.reference_index);
-                    }
-                }
-            }
-
-            //println!("Parsed {} -> {} modifications for {}\n{}", rm.canonical_base, rm.modified_base, qname, std::str::from_utf8(&modified_seq).unwrap());
-            Some(rm)
+            return None;
         }
+
+        //println!("Parsing bam record");
+        let mut rm = ReadModifications {
+            canonical_base: 'x',
+            modified_base: 'x',
+            strand: '+',
+            modification_indices: vec![],
+            modification_probabilities: vec![],
+            read_to_reference_map: HashMap::new()
+        };
+
+        // this SEQ is in the same orientation as the reference,
+        // revcomp it here to make it the original orientation that the instrument read
+        let mut instrument_read_seq = record.seq().as_bytes();
+        if record.is_reverse() {
+            instrument_read_seq = alphabets::dna::revcomp(instrument_read_seq);
+            rm.strand = '-';
+        }
+
+        // parse probabilities
+        if let Ok(Aux::ArrayU8(array)) = record.aux(b"Ml") {
+            for encoded_probability in array.iter() {
+                rm.modification_probabilities.push(encoded_probability as f64 / 255.0);
+            }
+        }
+
+        if let Ok(Aux::String(mm_str)) = record.aux(b"Mm") {
+
+            rm.canonical_base = mm_str.as_bytes()[0] as char;
+            rm.modified_base = mm_str.as_bytes()[2] as char;
+
+            // calculate the index in the read of each canonical base
+            let mut canonical_indices = Vec::<usize>::new();
+            for (index, base) in instrument_read_seq.iter().enumerate() {
+                if *base as char == rm.canonical_base {
+                    canonical_indices.push(index)
+                }
+            }
+
+            // parse the modification string and transform it into indices in the read
+            let mut canonical_count : usize = 0;
+            assert_eq!(mm_str.matches(';').count(), 1);
+            for token in mm_str.split(';').next().unwrap().split(',').skip(1) {
+                canonical_count += token.parse::<usize>().unwrap();
+                rm.modification_indices.push(canonical_indices[canonical_count]);
+                canonical_count += 1;
+            }
+
+            // extract the alignment from the bam record
+            let mut aligned_pairs = calculate_aligned_pairs(record);
+
+            // aligned_pairs stores the index of the read along SEQ, which may be
+            // reverse complemented. switch the coordinates here to be the original
+            // sequencing direction to be consistent with the Mm/Ml tag.
+            let seq_len = instrument_read_seq.len();
+            if record.is_reverse() {
+                for t in &mut aligned_pairs {
+                    t.read_index = seq_len - t.read_index - 1;
+                }
+            }
+
+            // temporary set of reference positions with a modification
+            let mut read_modification_set = HashSet::<usize>::new();
+            for i in &rm.modification_indices {
+                read_modification_set.insert(*i);
+            }
+
+            rm.read_to_reference_map.reserve(rm.modification_indices.len());
+            for t in &aligned_pairs {
+                if read_modification_set.contains(&t.read_index) {
+                    rm.read_to_reference_map.insert(t.read_index, t.reference_index);
+                }
+            }
+        }
+
+        //println!("Parsed {} -> {} modifications for {}\n{}", rm.canonical_base, rm.modified_base, qname, std::str::from_utf8(&modified_seq).unwrap());
+        Some(rm)
     }
 }
 
