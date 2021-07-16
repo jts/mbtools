@@ -106,7 +106,8 @@ impl ReadModifications
 
                 // parse the modification string and transform it into indices in the read
                 let mut canonical_count : usize = 0;
-                for token in mm_str.split(",").skip(1) {
+                assert_eq!(mm_str.matches(';').count(), 1);
+                for token in mm_str.split(';').next().unwrap().split(',').skip(1) {
                     canonical_count += token.parse::<usize>().unwrap();
                     rm.modification_indices.push(canonical_indices[canonical_count]);
                     canonical_count += 1;
