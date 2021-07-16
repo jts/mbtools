@@ -59,84 +59,91 @@ pub struct ReadModifications
 
 impl ReadModifications
 {
-    pub fn from_bam_record(record: &bam::Record) -> Self {
-        //println!("Parsing bam record");
-        let mut rm = ReadModifications {
-            canonical_base: 'x',
-            modified_base: 'x',
-            strand: '+',
-            modification_indices: vec![],
-            modification_probabilities: vec![],
-            read_to_reference_map: HashMap::new()
-        };
+    pub fn from_bam_record(record: &bam::Record) -> Option<Self> {
+        
+        // records that are missing the SEQ field cannot be processed
+        if record.seq().len() == 0 {
+            None
+        } else {
 
-        // this SEQ is in the same orientation as the reference,
-        // revcomp it here to make it the original orientation that the instrument read
-        let mut instrument_read_seq = record.seq().as_bytes();
-        if record.is_reverse() {
-            instrument_read_seq = alphabets::dna::revcomp(instrument_read_seq);
-            rm.strand = '-';
-        }
+            //println!("Parsing bam record");
+            let mut rm = ReadModifications {
+                canonical_base: 'x',
+                modified_base: 'x',
+                strand: '+',
+                modification_indices: vec![],
+                modification_probabilities: vec![],
+                read_to_reference_map: HashMap::new()
+            };
 
-        // parse probabilities
-        if let Ok(Aux::ArrayU8(array)) = record.aux(b"Ml") {
-            for encoded_probability in array.iter() {
-                rm.modification_probabilities.push(encoded_probability as f64 / 255.0);
-            }
-        }
-
-        if let Ok(Aux::String(mm_str)) = record.aux(b"Mm") {
-
-            rm.canonical_base = mm_str.as_bytes()[0] as char;
-            rm.modified_base = mm_str.as_bytes()[2] as char;
-
-            // calculate the index in the read of each canonical base
-            let mut canonical_indices = Vec::<usize>::new();
-            for (index, base) in instrument_read_seq.iter().enumerate() {
-                if *base as char == rm.canonical_base {
-                    canonical_indices.push(index)
-                }
-            }
-
-            // parse the modification string and transform it into indices in the read
-            let mut canonical_count : usize = 0;
-            if mm_str.len() > 4 {
-                for token in mm_str[4..].split(",") {
-                    canonical_count += token.parse::<usize>().unwrap();
-                    rm.modification_indices.push(canonical_indices[canonical_count]);
-                    canonical_count += 1;
-                }
-            }
-
-            // extract the alignment from the bam record
-            let mut aligned_pairs = calculate_aligned_pairs(record);
-
-            // aligned_pairs stores the index of the read along SEQ, which may be
-            // reverse complemented. switch the coordinates here to be the original
-            // sequencing direction to be consistent with the Mm/Ml tag.
-            let seq_len = instrument_read_seq.len();
+            // this SEQ is in the same orientation as the reference,
+            // revcomp it here to make it the original orientation that the instrument read
+            let mut instrument_read_seq = record.seq().as_bytes();
             if record.is_reverse() {
-                for t in &mut aligned_pairs {
-                    t.read_index = seq_len - t.read_index - 1;
+                instrument_read_seq = alphabets::dna::revcomp(instrument_read_seq);
+                rm.strand = '-';
+            }
+
+            // parse probabilities
+            if let Ok(Aux::ArrayU8(array)) = record.aux(b"Ml") {
+                for encoded_probability in array.iter() {
+                    rm.modification_probabilities.push(encoded_probability as f64 / 255.0);
                 }
             }
 
-            // temporary set of reference positions with a modification
-            let mut read_modification_set = HashSet::<usize>::new();
-            for i in &rm.modification_indices {
-                read_modification_set.insert(*i);
-            }
+            if let Ok(Aux::String(mm_str)) = record.aux(b"Mm") {
 
-            rm.read_to_reference_map.reserve(rm.modification_indices.len());
-            for t in &aligned_pairs {
-                if read_modification_set.contains(&t.read_index) {
-                    rm.read_to_reference_map.insert(t.read_index, t.reference_index);
+                rm.canonical_base = mm_str.as_bytes()[0] as char;
+                rm.modified_base = mm_str.as_bytes()[2] as char;
+
+                // calculate the index in the read of each canonical base
+                let mut canonical_indices = Vec::<usize>::new();
+                for (index, base) in instrument_read_seq.iter().enumerate() {
+                    if *base as char == rm.canonical_base {
+                        canonical_indices.push(index)
+                    }
+                }
+
+                // parse the modification string and transform it into indices in the read
+                let mut canonical_count : usize = 0;
+                if mm_str.len() > 4 {
+                    for token in mm_str[4..].split(",") {
+                        canonical_count += token.parse::<usize>().unwrap();
+                        rm.modification_indices.push(canonical_indices[canonical_count]);
+                        canonical_count += 1;
+                    }
+                }
+
+                // extract the alignment from the bam record
+                let mut aligned_pairs = calculate_aligned_pairs(record);
+
+                // aligned_pairs stores the index of the read along SEQ, which may be
+                // reverse complemented. switch the coordinates here to be the original
+                // sequencing direction to be consistent with the Mm/Ml tag.
+                let seq_len = instrument_read_seq.len();
+                if record.is_reverse() {
+                    for t in &mut aligned_pairs {
+                        t.read_index = seq_len - t.read_index - 1;
+                    }
+                }
+
+                // temporary set of reference positions with a modification
+                let mut read_modification_set = HashSet::<usize>::new();
+                for i in &rm.modification_indices {
+                    read_modification_set.insert(*i);
+                }
+
+                rm.read_to_reference_map.reserve(rm.modification_indices.len());
+                for t in &aligned_pairs {
+                    if read_modification_set.contains(&t.read_index) {
+                        rm.read_to_reference_map.insert(t.read_index, t.reference_index);
+                    }
                 }
             }
+
+            //println!("Parsed {} -> {} modifications for {}\n{}", rm.canonical_base, rm.modified_base, qname, std::str::from_utf8(&modified_seq).unwrap());
+            Some(rm)
         }
-
-        //println!("Parsed {} -> {} modifications for {}\n{}", rm.canonical_base, rm.modified_base, qname, std::str::from_utf8(&modified_seq).unwrap());
-        rm
     }
 }
 
@@ -178,7 +185,7 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, inpu
     let mut bam = bam::Reader::from_path(input_bam).unwrap();
     let header = bam::Header::from_template(bam.header());
 
-    // map from (tid, position) -> (methylated_reads, total_reads)
+    // map from (tid, position, strand) -> (methylated_reads, total_reads)
     let mut reference_modifications = HashMap::<(i32, usize, char), (usize, usize)>::new();
 
     //
@@ -187,28 +194,23 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, inpu
     for r in bam.records() {
         let record = r.unwrap();
 
-        // records that are missing the SEQ field cannot be processed
-        if record.seq().len() == 0 {
-            continue;
-        }
-
-        let tid = record.tid();
-        let rm = ReadModifications::from_bam_record(&record);
-        //for (mod_index, mod_probability) in zip(rm.modification_indices.iter(), rm.modification_probabilities.iter()) {
-        for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
-            let is_modified_call = *mod_probability > 0.5;
-            let probability_correct = if is_modified_call { *mod_probability } else { 1.0 - *mod_probability };
-            if probability_correct > threshold {
-                let mut reference_position = rm.read_to_reference_map.get(mod_index)
-                    .expect(format!("Unable to find reference position for read base {}", mod_index).as_str()).clone();
-                let mut strand = rm.strand;
-                if collapse_strands && strand == '-' {
-                    reference_position -= 1; // TODO: this only works for CpG
-                    strand = '+';
+        if let Some(rm) = ReadModifications::from_bam_record(&record) {
+            
+            for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
+                let is_modified_call = *mod_probability > 0.5;
+                let probability_correct = if is_modified_call { *mod_probability } else { 1.0 - *mod_probability };
+                if probability_correct > threshold {
+                    let mut reference_position = rm.read_to_reference_map.get(mod_index)
+                        .expect(format!("Unable to find reference position for read base {}", mod_index).as_str()).clone();
+                    let mut strand = rm.strand;
+                    if collapse_strands && strand == '-' {
+                        reference_position -= 1; // TODO: this only works for CpG
+                        strand = '+';
+                    }
+                    let mut e = reference_modifications.entry( (record.tid(), reference_position, strand) ).or_insert( (0, 0) );
+                    (*e).0 += is_modified_call as usize;
+                    (*e).1 += 1;
                 }
-                let mut e = reference_modifications.entry( (tid, reference_position, strand) ).or_insert( (0, 0) );
-                (*e).0 += is_modified_call as usize;
-                (*e).1 += 1;
             }
         }
 
