@@ -197,9 +197,9 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, inpu
             for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
                 let is_modified_call = *mod_probability > 0.5;
                 let probability_correct = if is_modified_call { *mod_probability } else { 1.0 - *mod_probability };
-                if probability_correct > threshold {
-                    let mut reference_position = rm.read_to_reference_map.get(mod_index)
-                        .expect(format!("Unable to find reference position for read base {}", mod_index).as_str()).clone();
+                let map_lookup = rm.read_to_reference_map.get(mod_index);
+                if probability_correct > threshold && map_lookup.is_some() {
+                    let mut reference_position = map_lookup.unwrap().clone();
                     let mut strand = rm.strand;
                     if collapse_strands && strand == '-' {
                         reference_position -= 1; // TODO: this only works for CpG
