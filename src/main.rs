@@ -82,6 +82,22 @@ pub struct ModificationCall
     modification_probability: f64
 }
 
+impl ModificationCall
+{
+    pub fn is_modified(self) -> bool {
+        return self.modification_probability > 0.5;
+    }
+
+    pub fn get_probability_correct(self) -> f64 {
+        let p = if self.is_modified() { self.modification_probability } else { 1.0 - self.modification_probability };
+        return p
+    }
+
+    pub fn is_confident(self, threshold: f64) -> bool {
+        self.get_probability_correct() > threshold
+    }
+}
+
 // struct storing the modifications 
 pub struct ReadModifications
 {
@@ -250,11 +266,8 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, assu
         if let Some(rm) = ReadModifications::from_bam_record(&record, assume_canonical) {
             
             for call in rm.modification_calls {
-                let p = call.modification_probability;
-                let is_modified_call = p > 0.5;
-                let probability_correct = if is_modified_call { p } else { 1.0 - p };
                 let map_lookup = rm.read_to_reference_map.get(&call.read_index);
-                if probability_correct > threshold && map_lookup.is_some() {
+                if call.is_confident(threshold) && map_lookup.is_some() {
                     let mut reference_position = map_lookup.unwrap().clone();
                     let mut strand = rm.strand;
                     if collapse_strands && strand == '-' {
@@ -262,7 +275,7 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, assu
                         strand = '+';
                     }
                     let mut e = reference_modifications.entry( (record.tid(), reference_position, strand) ).or_insert( (0, 0) );
-                    (*e).0 += is_modified_call as usize;
+                    (*e).0 += call.is_modified() as usize;
                     (*e).1 += 1;
                 }
             }
