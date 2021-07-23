@@ -177,14 +177,12 @@ impl ReadModifications
                 let mut canonical_count : usize = 0;
 
                 for (token, encoded_probability) in first_mod_str.split(',').skip(1).zip(probability_array.iter()) {
-                    let c = token.parse::<usize>().unwrap();
-                    canonical_count += c;
+                    canonical_count += token.parse::<usize>().unwrap();
                     let i = canonical_indices[canonical_count];
-                    let p = encoded_probability as f64 / 255.0;
                     
                     let call = ModificationCall {
-                        read_index: canonical_indices[canonical_count],
-                        modification_probability: p,
+                        read_index: i,
+                        modification_probability: encoded_probability as f64 / 255.0,
                         reference_index: read_to_reference_map.get(&i).cloned()
                     };
 
