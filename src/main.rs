@@ -46,6 +46,34 @@ fn calculate_aligned_pairs(record: &bam::Record) -> Vec::<AlignedPair> {
     aligned_pairs
 }
 
+// fill in modification indices/modification probabilities
+// so it has an entry for every position in canonical indices
+fn fill_untagged_bases(canonical_indices: &Vec<usize>,
+                       modification_indices: &mut Vec<usize>,
+                       modification_probabilities: &mut Vec<f64>)
+{
+    let mut curr_mod_index = 0;
+    let tmp_indices = modification_indices.clone();
+    let tmp_probabilities = modification_probabilities.clone();
+
+    modification_indices.clear();
+    modification_probabilities.clear();
+
+    for i in 0 .. canonical_indices.len() {
+
+        modification_indices.push(canonical_indices[i]);
+        if curr_mod_index < tmp_indices.len() && canonical_indices[i] == tmp_indices[curr_mod_index] {
+            // copy probability from the input vector
+            modification_probabilities.push(tmp_probabilities[curr_mod_index]);
+            curr_mod_index += 1;
+        } else {
+            modification_probabilities.push(0.0);
+        }
+    }
+
+    assert_eq!(curr_mod_index, tmp_indices.len());
+}
+
 // struct storing the modifications 
 pub struct ReadModifications
 {
@@ -59,7 +87,7 @@ pub struct ReadModifications
 
 impl ReadModifications
 {
-    pub fn from_bam_record(record: &bam::Record) -> Option<Self> {
+    pub fn from_bam_record(record: &bam::Record, assume_canonical: bool) -> Option<Self> {
         
         // records that are missing the SEQ field cannot be processed
         if record.seq().len() == 0 {
@@ -113,6 +141,10 @@ impl ReadModifications
                 canonical_count += 1;
             }
 
+            if assume_canonical {
+                fill_untagged_bases(&mut canonical_indices, &mut rm.modification_indices, &mut rm.modification_probabilities);
+            }
+
             // extract the alignment from the bam record
             let mut aligned_pairs = calculate_aligned_pairs(record);
 
@@ -126,7 +158,7 @@ impl ReadModifications
                 }
             }
 
-            // temporary set of reference positions with a modification
+            // temporary set of read positions with a modification
             let mut read_modification_set = HashSet::<usize>::new();
             for i in &rm.modification_indices {
                 read_modification_set.insert(*i);
@@ -157,6 +189,11 @@ fn main() {
                     .long("collapse-strands")
                     .takes_value(false)
                     .help("merge the calls for the forward and negative strand into a single value"))
+                .arg(Arg::with_name("assume-canonical")
+                    .short("a")
+                    .long("assume-canonical")
+                    .takes_value(false)
+                    .help("assume bases not present in the Mm tag are canonical (unmodified)"))
                 .arg(Arg::with_name("probability-threshold")
                     .short("t")
                     .long("probability-threshold")
@@ -173,11 +210,14 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
-        calculate_modification_frequency(threshold, matches.is_present("collapse-strands"), matches.value_of("input-bam").unwrap())
+        calculate_modification_frequency(threshold,
+                                         matches.is_present("collapse-strands"),
+                                         matches.is_present("assume-canonical"),
+                                         matches.value_of("input-bam").unwrap())
     }
 }
 
-fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, input_bam: &str) {
+fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, assume_canonical: bool, input_bam: &str) {
     eprintln!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -192,7 +232,7 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, inpu
     for r in bam.records() {
         let record = r.unwrap();
 
-        if let Some(rm) = ReadModifications::from_bam_record(&record) {
+        if let Some(rm) = ReadModifications::from_bam_record(&record, assume_canonical) {
             
             for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
                 let is_modified_call = *mod_probability > 0.5;
