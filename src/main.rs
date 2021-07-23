@@ -46,22 +46,22 @@ fn calculate_aligned_pairs(record: &bam::Record) -> Vec::<AlignedPair> {
     aligned_pairs
 }
 
-// fill in modification indices/modification probabilities
+// fill in call indices/modification probabilities
 // so it has an entry for every position in canonical indices
 fn fill_untagged_bases(canonical_indices: &Vec<usize>,
-                       modification_indices: &mut Vec<usize>,
+                       call_indices: &mut Vec<usize>,
                        modification_probabilities: &mut Vec<f64>)
 {
     let mut curr_mod_index = 0;
-    let tmp_indices = modification_indices.clone();
+    let tmp_indices = call_indices.clone();
     let tmp_probabilities = modification_probabilities.clone();
 
-    modification_indices.clear();
+    call_indices.clear();
     modification_probabilities.clear();
 
     for i in 0 .. canonical_indices.len() {
 
-        modification_indices.push(canonical_indices[i]);
+        call_indices.push(canonical_indices[i]);
         if curr_mod_index < tmp_indices.len() && canonical_indices[i] == tmp_indices[curr_mod_index] {
             // copy probability from the input vector
             modification_probabilities.push(tmp_probabilities[curr_mod_index]);
@@ -80,7 +80,7 @@ pub struct ReadModifications
     canonical_base: char,
     modified_base: char,
     strand: char,
-    modification_indices: Vec<usize>,
+    call_indices: Vec<usize>,
     modification_probabilities: Vec<f64>,
     read_to_reference_map: HashMap<usize, usize>
 }
@@ -99,7 +99,7 @@ impl ReadModifications
             canonical_base: 'x',
             modified_base: 'x',
             strand: '+',
-            modification_indices: vec![],
+            call_indices: vec![],
             modification_probabilities: vec![],
             read_to_reference_map: HashMap::new()
         };
@@ -137,12 +137,12 @@ impl ReadModifications
             assert_eq!(mm_str.matches(';').count(), 1);
             for token in mm_str.split(';').next().unwrap().split(',').skip(1) {
                 canonical_count += token.parse::<usize>().unwrap();
-                rm.modification_indices.push(canonical_indices[canonical_count]);
+                rm.call_indices.push(canonical_indices[canonical_count]);
                 canonical_count += 1;
             }
 
             if assume_canonical {
-                fill_untagged_bases(&mut canonical_indices, &mut rm.modification_indices, &mut rm.modification_probabilities);
+                fill_untagged_bases(&mut canonical_indices, &mut rm.call_indices, &mut rm.modification_probabilities);
             }
 
             // extract the alignment from the bam record
@@ -160,11 +160,11 @@ impl ReadModifications
 
             // temporary set of read positions with a modification
             let mut read_modification_set = HashSet::<usize>::new();
-            for i in &rm.modification_indices {
+            for i in &rm.call_indices {
                 read_modification_set.insert(*i);
             }
 
-            rm.read_to_reference_map.reserve(rm.modification_indices.len());
+            rm.read_to_reference_map.reserve(rm.call_indices.len());
             for t in &aligned_pairs {
                 if read_modification_set.contains(&t.read_index) {
                     rm.read_to_reference_map.insert(t.read_index, t.reference_index);
@@ -234,7 +234,7 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, assu
 
         if let Some(rm) = ReadModifications::from_bam_record(&record, assume_canonical) {
             
-            for (mod_index, mod_probability) in rm.modification_indices.iter().zip(rm.modification_probabilities.iter()) {
+            for (mod_index, mod_probability) in rm.call_indices.iter().zip(rm.modification_probabilities.iter()) {
                 let is_modified_call = *mod_probability > 0.5;
                 let probability_correct = if is_modified_call { *mod_probability } else { 1.0 - *mod_probability };
                 let map_lookup = rm.read_to_reference_map.get(mod_index);
