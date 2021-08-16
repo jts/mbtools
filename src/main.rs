@@ -7,7 +7,7 @@ use std::time::{Instant};
 use hashbrown::{HashMap};
 use itertools::Itertools;
 use clap::{Arg, App, SubCommand, value_t};
-use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*};
+use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*, bam::ext::BamRecordExtensions};
 use bio::alphabets;
 
 //
@@ -227,6 +227,22 @@ fn main() {
                     .required(true)
                     .index(1)
                     .help("the input bam file to process")))
+        .subcommand(SubCommand::with_name("read-modifications")
+                .about("calculate the frequency of modified bases per read")
+                .arg(Arg::with_name("assume-canonical")
+                    .short("a")
+                    .long("assume-canonical")
+                    .takes_value(false)
+                    .help("assume bases not present in the Mm tag are canonical (unmodified)"))
+                .arg(Arg::with_name("probability-threshold")
+                    .short("t")
+                    .long("probability-threshold")
+                    .takes_value(true)
+                    .help("only use calls where the probability of being modified/not modified is at least t"))
+                .arg(Arg::with_name("input-bam")
+                    .required(true)
+                    .index(1)
+                    .help("the input bam file to process")))
         .get_matches();
 
 
@@ -238,6 +254,15 @@ fn main() {
                                          matches.is_present("collapse-strands"),
                                          matches.is_present("assume-canonical"),
                                          matches.value_of("input-bam").unwrap())
+    }
+    
+    if let Some(matches) = matches.subcommand_matches("read-modifications") {
+
+        // TODO: set to nanopolish default LLR
+        let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
+        calculate_read_modifications(threshold,
+                                     matches.is_present("assume-canonical"),
+                                     matches.value_of("input-bam").unwrap())
     }
 }
 
@@ -296,3 +321,59 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, assu
     let mean_frequency = sum_modified as f64 / sum_reads as f64;
     eprintln!("Processed {} reads in {:?}. Mean depth: {:.2} mean modification frequency: {:.2}", reads_processed, start.elapsed(), mean_depth, mean_frequency);
 }
+
+fn calculate_read_modifications(threshold: f64, assume_canonical: bool, input_bam: &str) {
+    eprintln!("calculating read modifications with t:{} on file {}", threshold, input_bam);
+
+    let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
+    let header_view = bam.header().clone();
+
+    //
+    let start = Instant::now();
+    let mut reads_processed = 0;
+    println!("read_name\tchromosome\tstart_position\tend_position\talignment_length\tstrand\tmapping_quality\ttotal_calls\tmodified_calls\tmodification_frequency");
+
+    let mut summary_total = 0;
+    let mut summary_modified = 0;
+
+    for r in bam.records() {
+        let record = r.unwrap();
+
+        if record.is_unmapped() {
+            continue;
+        }
+
+        let mut total_calls = 0;
+        let mut total_modified = 0;
+
+        if let Some(rm) = ReadModifications::from_bam_record(&record, assume_canonical) {
+
+            for call in rm.modification_calls {
+                if call.is_confident(threshold) {
+                    total_calls += 1;
+                    total_modified += call.is_modified() as usize;
+                }
+            }
+        }
+
+        let qname = std::str::from_utf8(record.qname()).unwrap();
+        let strand = if record.is_reverse() { '-' } else { '+' };
+        let mod_frequency = if total_calls > 0 { total_modified as f64 / total_calls as f64 } else { f64::NAN };
+        let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
+        let start_position = record.pos();
+        let end_position = record.reference_end();
+        let alignment_length = end_position - start_position + 1;
+        println!("{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{:.2}", 
+            qname, contig, record.pos(), end_position, alignment_length, 
+            strand, record.mapq(), total_calls, total_modified, mod_frequency);
+    
+        // for the ending summary line
+        reads_processed += 1;
+        summary_total += total_calls;
+        summary_modified += total_modified;
+    }
+    
+    let summary_frequency = if summary_total > 0 { summary_modified as f64 / summary_total as f64 } else { f64::NAN };
+    eprintln!("Processed {} reads in {:?}. Mean modification frequency: {:.2}", reads_processed, start.elapsed(), summary_frequency);
+}
+
