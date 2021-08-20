@@ -9,4 +9,7 @@ mbtools reference-frequency input.bam > output.tsv
 
 # calculate the modification frequency for each read
 mbtools read-frequency input.bam > output.tsv
+
+# calculate the modification frequency for each region in a bed file
+mbtools region-frequency -r regions.bed input.bam > output.tsv
 ```
