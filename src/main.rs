@@ -413,33 +413,38 @@ fn calculate_read_frequency(threshold: f64, assume_canonical: bool, input_bam: &
 
 fn calculate_region_frequency(threshold: f64, assume_canonical: bool, region_bed: &str, input_bam: &str) {
     eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
-    let mut bed_reader = csv::ReaderBuilder::new().delimiter(b'\t').from_path(region_bed).expect("Could not open bed file");
+    
+    let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
+    let header = bam::Header::from_template(bam.header());
+    let header_view = bam::HeaderView::from_header(&header);
+
 
     // read bed file into a data structure we can use to make intervaltrees from
-    let mut tree_desc = HashMap::<String, Vec<(Range<usize>, usize)>>::new();
+    // this maps from tid to a vector of intervals, with an interval index for each
+    let mut bed_reader = csv::ReaderBuilder::new().delimiter(b'\t').from_path(region_bed).expect("Could not open bed file");
+    let mut tree_desc = HashMap::<u32, Vec<(Range<usize>, usize)>>::new();
+
+    // this stores the modified/total counts for each interval
     let mut region_data = Vec::new();
 
     for record in bed_reader.records() {
         let record = record.expect("Could not parse bed record");
-        let chr = record[0].to_string();
-        let start: usize = record[1].parse().unwrap();
-        let end: usize = record[2].parse().unwrap();
+        if let Some(tid) = header_view.tid(record[0].as_bytes()) {
+            let start: usize = record[1].parse().unwrap();
+            let end: usize = record[2].parse().unwrap();
 
-        let e = tree_desc.entry(chr.clone()).or_insert( Vec::new() );
-        e.push( (start..end, region_data.len()) );
-        region_data.push( (chr, start, end, 0, 0) );
+            let e = tree_desc.entry(tid).or_insert( Vec::new() );
+            e.push( (start..end, region_data.len()) );
+            region_data.push( (record[0].to_string(), start, end, 0, 0) );
+        }
     }
 
-    // build chr -> intervaltree map
+    // build tid -> intervaltree map
     // the intervaltree allows us to look up an interval_idx for a given chromosome and position
-    let mut interval_trees = HashMap::<String, IntervalTree<usize, usize>>::new();
-    for (chr, d) in tree_desc {
-        interval_trees.insert(chr, d.iter().cloned().collect());
+    let mut interval_trees = HashMap::<u32, IntervalTree<usize, usize>>::new();
+    for (tid, desc) in tree_desc {
+        interval_trees.insert(tid, desc.iter().cloned().collect());
     }
-
-    let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
-    let header = bam::Header::from_template(bam.header());
-    let header_view = bam::HeaderView::from_header(&header);
 
     //
     let start = Instant::now();
@@ -451,13 +456,13 @@ fn calculate_region_frequency(threshold: f64, assume_canonical: bool, region_bed
             
             for call in rm.modification_calls {
                 if call.is_confident(threshold) && call.reference_index.is_some() {
-                    let contig = String::from_utf8(header_view.tid2name(record.tid() as u32).to_vec()).unwrap();
                     let reference_position = call.reference_index.unwrap().clone();
-                    let tree = interval_trees.get(&contig).unwrap();
-                    for element in tree.query_point(reference_position) {
-                        let interval_idx = element.value;
-                        region_data[interval_idx].3 += call.is_modified() as usize;
-                        region_data[interval_idx].4 += 1;
+                    if let Some(tree) = interval_trees.get( &(record.tid() as u32)) {
+                        for element in tree.query_point(reference_position) {
+                            let interval_idx = element.value;
+                            region_data[interval_idx].3 += call.is_modified() as usize;
+                            region_data[interval_idx].4 += 1;
+                        }
                     }
                 }
             }
@@ -466,8 +471,10 @@ fn calculate_region_frequency(threshold: f64, assume_canonical: bool, region_bed
         reads_processed += 1;
     }
 
+    println!("chromosome\tstart\tend\tmodified_calls\ttotal_calls\tmodification_frequency");
     for d in region_data {
-        println!("{}\t{}\t{}\t{}\t{}", d.0, d.1, d.2, d.3, d.4);
+        let f = d.3 as f64 / d.4 as f64;
+        println!("{}\t{}\t{}\t{}\t{}\t{:.3}", d.0, d.1, d.2, d.3, d.4, f);
     }
     eprintln!("Processed {} reads in {:?}", reads_processed, start.elapsed());
 
