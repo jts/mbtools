@@ -422,19 +422,19 @@ fn calculate_region_frequency(threshold: f64, assume_canonical: bool, region_bed
     // read bed file into a data structure we can use to make intervaltrees from
     // this maps from tid to a vector of intervals, with an interval index for each
     let mut bed_reader = csv::ReaderBuilder::new().delimiter(b'\t').from_path(region_bed).expect("Could not open bed file");
-    let mut tree_desc = HashMap::<u32, Vec<(Range<usize>, usize)>>::new();
+    let mut region_desc_by_chr = HashMap::<u32, Vec<(Range<usize>, usize)>>::new();
 
     // this stores the modified/total counts for each interval
     let mut region_data = Vec::new();
 
-    for record in bed_reader.records() {
-        let record = record.expect("Could not parse bed record");
+    for r in bed_reader.records() {
+        let record = r.expect("Could not parse bed record");
         if let Some(tid) = header_view.tid(record[0].as_bytes()) {
             let start: usize = record[1].parse().unwrap();
             let end: usize = record[2].parse().unwrap();
 
-            let e = tree_desc.entry(tid).or_insert( Vec::new() );
-            e.push( (start..end, region_data.len()) );
+            let region_desc = region_desc_by_chr.entry(tid).or_insert( Vec::new() );
+            region_desc.push( (start..end, region_data.len()) );
             region_data.push( (record[0].to_string(), start, end, 0, 0) );
         }
     }
@@ -442,8 +442,8 @@ fn calculate_region_frequency(threshold: f64, assume_canonical: bool, region_bed
     // build tid -> intervaltree map
     // the intervaltree allows us to look up an interval_idx for a given chromosome and position
     let mut interval_trees = HashMap::<u32, IntervalTree<usize, usize>>::new();
-    for (tid, desc) in tree_desc {
-        interval_trees.insert(tid, desc.iter().cloned().collect());
+    for (tid, region_desc) in region_desc_by_chr {
+        interval_trees.insert(tid, region_desc.iter().cloned().collect());
     }
 
     //
