@@ -9,6 +9,8 @@ use itertools::Itertools;
 use clap::{Arg, App, SubCommand, value_t};
 use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*, bam::ext::BamRecordExtensions};
 use bio::alphabets;
+use intervaltree::IntervalTree;
+use core::ops::Range;
 
 //
 pub struct AlignedPair
@@ -243,6 +245,28 @@ fn main() {
                     .required(true)
                     .index(1)
                     .help("the input bam file to process")))
+        .subcommand(SubCommand::with_name("region-frequency")
+                .about("calculate the frequency of modified bases for regions provided within the BED file")
+                .arg(Arg::with_name("assume-canonical")
+                    .short("a")
+                    .long("assume-canonical")
+                    .takes_value(false)
+                    .help("assume bases not present in the Mm tag are canonical (unmodified)"))
+                .arg(Arg::with_name("probability-threshold")
+                    .short("t")
+                    .long("probability-threshold")
+                    .takes_value(true)
+                    .help("only use calls where the probability of being modified/not modified is at least t"))
+                .arg(Arg::with_name("region-bed")
+                    .short("r")
+                    .long("region-bed")
+                    .takes_value(true)
+                    .required(true)
+                    .help("bed file containing the regions to calculate modification frequencies for"))
+                .arg(Arg::with_name("input-bam")
+                    .required(true)
+                    .index(1)
+                    .help("the input bam file to process")))
         .get_matches();
 
 
@@ -250,23 +274,33 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
-        calculate_modification_frequency(threshold,
-                                         matches.is_present("collapse-strands"),
-                                         matches.is_present("assume-canonical"),
-                                         matches.value_of("input-bam").unwrap())
+        calculate_reference_frequency(threshold,
+                                      matches.is_present("collapse-strands"),
+                                      matches.is_present("assume-canonical"),
+                                      matches.value_of("input-bam").unwrap())
     }
     
     if let Some(matches) = matches.subcommand_matches("read-frequency") {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
-        calculate_read_modifications(threshold,
-                                     matches.is_present("assume-canonical"),
-                                     matches.value_of("input-bam").unwrap())
+        calculate_read_frequency(threshold,
+                                 matches.is_present("assume-canonical"),
+                                 matches.value_of("input-bam").unwrap())
+    }
+
+    if let Some(matches) = matches.subcommand_matches("region-frequency") {
+
+        // TODO: set to nanopolish default LLR
+        let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
+        calculate_region_frequency(threshold,
+                                   matches.is_present("assume-canonical"),
+                                   matches.value_of("region-bed").unwrap(),
+                                   matches.value_of("input-bam").unwrap())
     }
 }
 
-fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, assume_canonical: bool, input_bam: &str) {
+fn calculate_reference_frequency(threshold: f64, collapse_strands: bool, assume_canonical: bool, input_bam: &str) {
     eprintln!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -322,7 +356,7 @@ fn calculate_modification_frequency(threshold: f64, collapse_strands: bool, assu
     eprintln!("Processed {} reads in {:?}. Mean depth: {:.2} mean modification frequency: {:.2}", reads_processed, start.elapsed(), mean_depth, mean_frequency);
 }
 
-fn calculate_read_modifications(threshold: f64, assume_canonical: bool, input_bam: &str) {
+fn calculate_read_frequency(threshold: f64, assume_canonical: bool, input_bam: &str) {
     eprintln!("calculating read modifications with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -375,5 +409,86 @@ fn calculate_read_modifications(threshold: f64, assume_canonical: bool, input_ba
     
     let summary_frequency = if summary_total > 0 { summary_modified as f64 / summary_total as f64 } else { f64::NAN };
     eprintln!("Processed {} reads in {:?}. Mean modification frequency: {:.2}", reads_processed, start.elapsed(), summary_frequency);
+}
+
+fn calculate_region_frequency(threshold: f64, assume_canonical: bool, region_bed: &str, input_bam: &str) {
+    eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
+    let mut bed_reader = csv::ReaderBuilder::new().delimiter(b'\t').from_path(region_bed).expect("Could not open bed file");
+
+    // read bed file into a data structure we can use to make intervaltrees from
+    let mut tree_desc = HashMap::<String, Vec<(Range<usize>, usize)>>::new();
+    let mut region_data = Vec::new();
+
+    for record in bed_reader.records() {
+        let record = record.expect("Could not parse bed record");
+        let chr = record[0].to_string();
+        let start: usize = record[1].parse().unwrap();
+        let end: usize = record[2].parse().unwrap();
+
+        let e = tree_desc.entry(chr.clone()).or_insert( Vec::new() );
+        e.push( (start..end, region_data.len()) );
+        region_data.push( (chr, start, end, 0, 0) );
+    }
+
+    // build chr -> intervaltree map
+    // the intervaltree allows us to look up an interval_idx for a given chromosome and position
+    let mut interval_trees = HashMap::<String, IntervalTree<usize, usize>>::new();
+    for (chr, d) in tree_desc {
+        interval_trees.insert(chr, d.iter().cloned().collect());
+    }
+
+    let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
+    let header = bam::Header::from_template(bam.header());
+    let header_view = bam::HeaderView::from_header(&header);
+
+    //
+    let start = Instant::now();
+    let mut reads_processed = 0;
+    for r in bam.records() {
+        let record = r.unwrap();
+
+        if let Some(rm) = ReadModifications::from_bam_record(&record, assume_canonical) {
+            
+            for call in rm.modification_calls {
+                if call.is_confident(threshold) && call.reference_index.is_some() {
+                    let contig = String::from_utf8(header_view.tid2name(record.tid() as u32).to_vec()).unwrap();
+                    let reference_position = call.reference_index.unwrap().clone();
+                    let tree = interval_trees.get(&contig).unwrap();
+                    for element in tree.query_point(reference_position) {
+                        let interval_idx = element.value;
+                        region_data[interval_idx].3 += call.is_modified() as usize;
+                        region_data[interval_idx].4 += 1;
+                    }
+                }
+            }
+        }
+
+        reads_processed += 1;
+    }
+
+    for d in region_data {
+        println!("{}\t{}\t{}\t{}\t{}", d.0, d.1, d.2, d.3, d.4);
+    }
+    eprintln!("Processed {} reads in {:?}", reads_processed, start.elapsed());
+
+    /*
+    //
+    let mut sum_reads = 0;
+    let mut sum_modified = 0;
+
+    println!("chromosome\tposition\tstrand\tmodified_reads\ttotal_reads\tmodified_frequency");
+    for key in reference_modifications.keys().sorted() {
+        let (tid, position, strand) = key;
+        let contig = String::from_utf8_lossy(header_view.tid2name(*tid as u32));
+        let (modified_reads, total_reads) = reference_modifications.get( key ).unwrap();
+        println!("{}\t{}\t{}\t{}\t{}\t{:.3}", contig, position, strand, modified_reads, total_reads, *modified_reads as f64 / *total_reads as f64);
+    
+        sum_reads += total_reads;
+        sum_modified += modified_reads;
+    }
+    
+    let mean_depth = sum_reads as f64 / reference_modifications.keys().len() as f64;
+    let mean_frequency = sum_modified as f64 / sum_reads as f64;
+    */
 }
 
