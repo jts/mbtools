@@ -206,7 +206,7 @@ fn main() {
         .version("0.1")
         .author("Jared Simpson <jared.simpson@oicr.on.ca>")
         .about("Toolkit for working with modification bam files")
-        .subcommand(SubCommand::with_name("modification-frequency")
+        .subcommand(SubCommand::with_name("reference-frequency")
                 .about("calculate the frequency of modified bases per position of the genome")
                 .arg(Arg::with_name("collapse-strands")
                     .short("c")
@@ -227,7 +227,7 @@ fn main() {
                     .required(true)
                     .index(1)
                     .help("the input bam file to process")))
-        .subcommand(SubCommand::with_name("read-modifications")
+        .subcommand(SubCommand::with_name("read-frequency")
                 .about("calculate the frequency of modified bases per read")
                 .arg(Arg::with_name("assume-canonical")
                     .short("a")
@@ -246,7 +246,7 @@ fn main() {
         .get_matches();
 
 
-    if let Some(matches) = matches.subcommand_matches("modification-frequency") {
+    if let Some(matches) = matches.subcommand_matches("reference-frequency") {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
@@ -256,7 +256,7 @@ fn main() {
                                          matches.value_of("input-bam").unwrap())
     }
     
-    if let Some(matches) = matches.subcommand_matches("read-modifications") {
+    if let Some(matches) = matches.subcommand_matches("read-frequency") {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
