@@ -114,7 +114,7 @@ pub struct ReadModifications
 
 impl ReadModifications
 {
-    pub fn from_bam_record(record: &bam::Record, assume_canonical: bool) -> Option<Self> {
+    pub fn from_bam_record(record: &bam::Record) -> Option<Self> {
         
         // records that are missing the SEQ field cannot be processed
         if record.seq().len() == 0 {
@@ -144,9 +144,15 @@ impl ReadModifications
                 // TODO: handle multiple mods
                 assert_eq!(mm_str.matches(';').count(), 1);
                 let first_mod_str = mm_str.split(';').next().unwrap();
+                let mod_meta = first_mod_str.split(',').next().unwrap().as_bytes();
 
-                rm.canonical_base = first_mod_str.as_bytes()[0] as char;
-                rm.modified_base = first_mod_str.as_bytes()[2] as char;
+                rm.canonical_base = mod_meta[0] as char;
+                rm.modified_base = mod_meta[2] as char;
+                let mut assume_canonical = true;
+                let optional_flag_idx = mod_meta.len() - 1;
+                if mod_meta[optional_flag_idx] as char == '?' {
+                    assume_canonical = false;
+                }
 
                 // calculate the index of each canonical base in the read
                 // ACTACATA -> (1,4) if C is canonical
@@ -215,11 +221,6 @@ fn main() {
                     .long("collapse-strands")
                     .takes_value(false)
                     .help("merge the calls for the forward and negative strand into a single value"))
-                .arg(Arg::with_name("assume-canonical")
-                    .short("a")
-                    .long("assume-canonical")
-                    .takes_value(false)
-                    .help("assume bases not present in the Mm tag are canonical (unmodified)"))
                 .arg(Arg::with_name("probability-threshold")
                     .short("t")
                     .long("probability-threshold")
@@ -231,11 +232,6 @@ fn main() {
                     .help("the input bam file to process")))
         .subcommand(SubCommand::with_name("read-frequency")
                 .about("calculate the frequency of modified bases per read")
-                .arg(Arg::with_name("assume-canonical")
-                    .short("a")
-                    .long("assume-canonical")
-                    .takes_value(false)
-                    .help("assume bases not present in the Mm tag are canonical (unmodified)"))
                 .arg(Arg::with_name("probability-threshold")
                     .short("t")
                     .long("probability-threshold")
@@ -247,11 +243,6 @@ fn main() {
                     .help("the input bam file to process")))
         .subcommand(SubCommand::with_name("region-frequency")
                 .about("calculate the frequency of modified bases for regions provided within the BED file")
-                .arg(Arg::with_name("assume-canonical")
-                    .short("a")
-                    .long("assume-canonical")
-                    .takes_value(false)
-                    .help("assume bases not present in the Mm tag are canonical (unmodified)"))
                 .arg(Arg::with_name("probability-threshold")
                     .short("t")
                     .long("probability-threshold")
@@ -276,7 +267,6 @@ fn main() {
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
         calculate_reference_frequency(threshold,
                                       matches.is_present("collapse-strands"),
-                                      matches.is_present("assume-canonical"),
                                       matches.value_of("input-bam").unwrap())
     }
     
@@ -285,7 +275,6 @@ fn main() {
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
         calculate_read_frequency(threshold,
-                                 matches.is_present("assume-canonical"),
                                  matches.value_of("input-bam").unwrap())
     }
 
@@ -294,13 +283,12 @@ fn main() {
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
         calculate_region_frequency(threshold,
-                                   matches.is_present("assume-canonical"),
                                    matches.value_of("region-bed").unwrap(),
                                    matches.value_of("input-bam").unwrap())
     }
 }
 
-fn calculate_reference_frequency(threshold: f64, collapse_strands: bool, assume_canonical: bool, input_bam: &str) {
+fn calculate_reference_frequency(threshold: f64, collapse_strands: bool, input_bam: &str) {
     eprintln!("calculating modification frequency with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -315,7 +303,7 @@ fn calculate_reference_frequency(threshold: f64, collapse_strands: bool, assume_
     for r in bam.records() {
         let record = r.unwrap();
 
-        if let Some(rm) = ReadModifications::from_bam_record(&record, assume_canonical) {
+        if let Some(rm) = ReadModifications::from_bam_record(&record) {
             
             for call in rm.modification_calls {
                 if call.is_confident(threshold) && call.reference_index.is_some() {
@@ -356,7 +344,7 @@ fn calculate_reference_frequency(threshold: f64, collapse_strands: bool, assume_
     eprintln!("Processed {} reads in {:?}. Mean depth: {:.2} mean modification frequency: {:.2}", reads_processed, start.elapsed(), mean_depth, mean_frequency);
 }
 
-fn calculate_read_frequency(threshold: f64, assume_canonical: bool, input_bam: &str) {
+fn calculate_read_frequency(threshold: f64, input_bam: &str) {
     eprintln!("calculating read modifications with t:{} on file {}", threshold, input_bam);
 
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -380,7 +368,7 @@ fn calculate_read_frequency(threshold: f64, assume_canonical: bool, input_bam: &
         let mut total_calls = 0;
         let mut total_modified = 0;
 
-        if let Some(rm) = ReadModifications::from_bam_record(&record, assume_canonical) {
+        if let Some(rm) = ReadModifications::from_bam_record(&record) {
 
             for call in rm.modification_calls {
                 if call.is_confident(threshold) {
@@ -411,7 +399,7 @@ fn calculate_read_frequency(threshold: f64, assume_canonical: bool, input_bam: &
     eprintln!("Processed {} reads in {:?}. Mean modification frequency: {:.2}", reads_processed, start.elapsed(), summary_frequency);
 }
 
-fn calculate_region_frequency(threshold: f64, assume_canonical: bool, region_bed: &str, input_bam: &str) {
+fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str) {
     eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
     
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
@@ -452,7 +440,7 @@ fn calculate_region_frequency(threshold: f64, assume_canonical: bool, region_bed
     for r in bam.records() {
         let record = r.unwrap();
 
-        if let Some(rm) = ReadModifications::from_bam_record(&record, assume_canonical) {
+        if let Some(rm) = ReadModifications::from_bam_record(&record) {
             
             for call in rm.modification_calls {
                 if call.is_confident(threshold) && call.reference_index.is_some() {
