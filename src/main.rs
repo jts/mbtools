@@ -11,6 +11,7 @@ use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*, bam::
 use bio::alphabets;
 use intervaltree::IntervalTree;
 use core::ops::Range;
+use std::collections::HashSet;
 
 //
 pub struct AlignedPair
@@ -142,7 +143,10 @@ impl ReadModifications
             if let Ok(Aux::ArrayU8(probability_array)) = record.aux(b"Ml") {
 
                 // TODO: handle multiple mods
-                assert_eq!(mm_str.matches(';').count(), 1);
+                if mm_str.matches(';').count() != 1 {
+                    return None;
+                }
+
                 let first_mod_str = mm_str.split(';').next().unwrap();
                 let mod_meta = first_mod_str.split(',').next().unwrap().as_bytes();
 
@@ -423,7 +427,7 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str)
 
             let region_desc = region_desc_by_chr.entry(tid).or_insert( Vec::new() );
             region_desc.push( (start..end, region_data.len()) );
-            region_data.push( (record[0].to_string(), start, end, 0, 0) );
+            region_data.push( (record[0].to_string(), start, end, 0, 0, 0) );
         }
     }
 
@@ -441,7 +445,10 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str)
         let record = r.unwrap();
 
         if let Some(rm) = ReadModifications::from_bam_record(&record) {
-            
+
+            // keep track of the intervals that this read spans
+            let mut interval_set = HashSet::<usize>::new();
+                        
             for call in rm.modification_calls {
                 if call.is_confident(threshold) && call.reference_index.is_some() {
                     let reference_position = call.reference_index.unwrap().clone();
@@ -450,19 +457,24 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str)
                             let interval_idx = element.value;
                             region_data[interval_idx].3 += call.is_modified() as usize;
                             region_data[interval_idx].4 += 1;
+                            interval_set.insert(interval_idx);
                         }
                     }
                 }
+            }
+
+            for idx in interval_set {
+                region_data[idx].5 += 1;
             }
         }
 
         reads_processed += 1;
     }
 
-    println!("chromosome\tstart\tend\tmodified_calls\ttotal_calls\tmodification_frequency");
+    println!("chromosome\tstart\tend\tnum_called_reads\tmodified_calls\ttotal_calls\tmodification_frequency");
     for d in region_data {
         let f = d.3 as f64 / d.4 as f64;
-        println!("{}\t{}\t{}\t{}\t{}\t{:.3}", d.0, d.1, d.2, d.3, d.4, f);
+        println!("{}\t{}\t{}\t{}\t{}\t{}\t{:.3}", d.0, d.1, d.2, d.5, d.3, d.4, f);
     }
     eprintln!("Processed {} reads in {:?}", reads_processed, start.elapsed());
 
