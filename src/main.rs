@@ -7,7 +7,7 @@ use std::time::{Instant};
 use hashbrown::{HashMap};
 use itertools::Itertools;
 use clap::{Arg, App, SubCommand, value_t};
-use rust_htslib::{bam, bam::Read, bam::record::Aux, bam::record::Cigar::*, bam::ext::BamRecordExtensions};
+use rust_htslib::{bam, faidx, bam::Read, bam::record::Aux, bam::record::Cigar::*, bam::ext::BamRecordExtensions};
 use bio::alphabets;
 use intervaltree::IntervalTree;
 use core::ops::Range;
@@ -252,6 +252,17 @@ fn main() {
                     .long("probability-threshold")
                     .takes_value(true)
                     .help("only use calls where the probability of being modified/not modified is at least t"))
+                .arg(Arg::with_name("reference-genome")
+                    .short("g")
+                    .long("reference-genome")
+                    .takes_value(true)
+                    .required(false)
+                    .help("path to reference genome"))
+                .arg(Arg::with_name("cpg")
+                    .long("cpg")
+                    .takes_value(false)
+                    .required(false)
+                    .help("only include calls at CpG dinucleotides"))
                 .arg(Arg::with_name("region-bed")
                     .short("r")
                     .long("region-bed")
@@ -286,9 +297,12 @@ fn main() {
 
         // TODO: set to nanopolish default LLR
         let threshold = value_t!(matches, "probability-threshold", f64).unwrap_or(0.8);
+
         calculate_region_frequency(threshold,
                                    matches.value_of("region-bed").unwrap(),
-                                   matches.value_of("input-bam").unwrap())
+                                   matches.value_of("input-bam").unwrap(),
+                                   matches.is_present("cpg"),
+                                   matches.value_of("reference-genome").unwrap_or(""))
     }
 }
 
@@ -403,13 +417,16 @@ fn calculate_read_frequency(threshold: f64, input_bam: &str) {
     eprintln!("Processed {} reads in {:?}. Mean modification frequency: {:.2}", reads_processed, start.elapsed(), summary_frequency);
 }
 
-fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str) {
+fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str, filter_to_cpg: bool, reference_genome: &str) {
     eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
+    let faidx = match filter_to_cpg {
+        true => Some(faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:")),
+        false => None
+    };
     
     let mut bam = bam::Reader::from_path(input_bam).expect("Could not read input bam file:");
     let header = bam::Header::from_template(bam.header());
     let header_view = bam::HeaderView::from_header(&header);
-
 
     // read bed file into a data structure we can use to make intervaltrees from
     // this maps from tid to a vector of intervals, with an interval index for each
@@ -438,11 +455,26 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str)
         interval_trees.insert(tid, region_desc.iter().cloned().collect());
     }
 
+    let mut curr_chromosome_id = -1;
+    let mut curr_chromosome_seq = String::new();
+    let mut curr_chromosome_length = 0;
+
     //
     let start = Instant::now();
     let mut reads_processed = 0;
     for r in bam.records() {
         let record = r.unwrap();
+
+        // if this record is on a chromosome we don't have in memory, load it
+        if filter_to_cpg && record.tid() != curr_chromosome_id {
+            let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
+            curr_chromosome_length = header_view.target_len(record.tid() as u32).unwrap() as usize;
+            
+            curr_chromosome_id = record.tid();
+            curr_chromosome_seq = faidx.as_ref().expect("faidx not found").fetch_seq_string(contig, 0, curr_chromosome_length).unwrap();
+            curr_chromosome_seq.make_ascii_uppercase();
+            
+        }
 
         if let Some(rm) = ReadModifications::from_bam_record(&record) {
 
@@ -452,6 +484,21 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str)
             for call in rm.modification_calls {
                 if call.is_confident(threshold) && call.reference_index.is_some() {
                     let reference_position = call.reference_index.unwrap().clone();
+                    
+                    // For the cpg filter
+                    let mut motif_position = reference_position;
+                    if rm.strand == '-' {
+                        motif_position -= 1;
+                    }
+
+                    // 
+                    if filter_to_cpg && 
+                        motif_position < curr_chromosome_length - 1 && 
+                        &curr_chromosome_seq[motif_position..motif_position+2] != "CG" {
+                        continue
+                    }
+                    //eprintln!("sub: {}", reference_subseq);
+
                     if let Some(tree) = interval_trees.get( &(record.tid() as u32)) {
                         for element in tree.query_point(reference_position) {
                             let interval_idx = element.value;
