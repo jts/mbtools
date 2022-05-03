@@ -487,12 +487,13 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
                     
                     // For the cpg filter
                     let mut motif_position = reference_position;
-                    if rm.strand == '-' {
+                    if rm.strand == '-' && reference_position > 0 {
                         motif_position -= 1;
                     }
 
                     // 
                     if filter_to_cpg && 
+                        ( rm.strand == '+' || reference_position > 0 ) &&
                         motif_position < curr_chromosome_length - 1 && 
                         &curr_chromosome_seq[motif_position..motif_position+2] != "CG" {
                         continue
