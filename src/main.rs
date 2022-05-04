@@ -444,7 +444,7 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
 
             let region_desc = region_desc_by_chr.entry(tid).or_insert( Vec::new() );
             region_desc.push( (start..end, region_data.len()) );
-            region_data.push( (record[0].to_string(), start, end, 0, 0, 0) );
+            region_data.push( (record[0].to_string(), start, end, 0, 0, 0, 0.0) );
         }
     }
 
@@ -505,6 +505,7 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
                             let interval_idx = element.value;
                             region_data[interval_idx].3 += call.is_modified() as usize;
                             region_data[interval_idx].4 += 1;
+                            region_data[interval_idx].6 += call.get_probability_correct();
                             interval_set.insert(interval_idx);
                         }
                     }
@@ -519,10 +520,11 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
         reads_processed += 1;
     }
 
-    println!("chromosome\tstart\tend\tnum_called_reads\tmodified_calls\ttotal_calls\tmodification_frequency");
+    println!("chromosome\tstart\tend\tnum_called_reads\tmodified_calls\ttotal_calls\tmodification_frequency\tmean_probability_correct");
     for d in region_data {
         let f = d.3 as f64 / d.4 as f64;
-        println!("{}\t{}\t{}\t{}\t{}\t{}\t{:.3}", d.0, d.1, d.2, d.5, d.3, d.4, f);
+        let p = d.6 as f64 / d.4 as f64;
+        println!("{}\t{}\t{}\t{}\t{}\t{}\t{:.3}\t{:.3}", d.0, d.1, d.2, d.5, d.3, d.4, f, p);
     }
     eprintln!("Processed {} reads in {:?}", reads_processed, start.elapsed());
 
