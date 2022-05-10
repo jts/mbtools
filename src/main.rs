@@ -464,6 +464,9 @@ fn calculate_region_frequency(threshold: f64, region_bed: &str, input_bam: &str,
     let mut reads_processed = 0;
     for r in bam.records() {
         let record = r.unwrap();
+        if record.is_unmapped() {
+            continue
+        }
 
         // if this record is on a chromosome we don't have in memory, load it
         if filter_to_cpg && record.tid() != curr_chromosome_id {
