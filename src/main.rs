@@ -26,7 +26,13 @@ fn calculate_aligned_pairs(record: &bam::Record) -> Vec::<AlignedPair> {
     let mut current_read_index :usize = 0;
     let mut current_reference_index :usize = record.pos() as usize;
 
-    for c in record.cigar().iter() {
+    let cigar = record.cigar();
+    if cigar.leading_hardclips() > 0 || cigar.trailing_hardclips() > 0 {
+        eprintln!("Error: cannot process alignments with hardclips");
+        std::process::exit(1);
+    }
+
+    for c in cigar.iter() {
 
         let (aligned, reference_stride, read_stride) = match *c {
             Match(_) | Equal(_) | Diff(_) => (true, 1, 1),
@@ -122,7 +128,6 @@ impl ReadModifications
             return None;
         }
 
-        //println!("Parsing bam record");
         let mut rm = ReadModifications {
             canonical_base: 'x',
             modified_base: 'x',
