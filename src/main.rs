@@ -118,8 +118,26 @@ pub struct ReadModifications
     modification_calls: Vec<ModificationCall>
 }
 
+// this wraps uncertainty around whether the draft tag (Mm) is used
+pub fn get_mm_tag(record: &bam::Record) -> Result<Aux, rust_htslib::errors::Error> {
+    let r = match record.aux(b"MM") {
+        Ok(v) => Ok(v),
+        Err(_) => record.aux(b"Mm")
+    };
+    return r;
+}
+
+pub fn get_ml_tag(record: &bam::Record) -> Result<Aux, rust_htslib::errors::Error> {
+    let r = match record.aux(b"ML") {
+        Ok(v) => Ok(v),
+        Err(_) => record.aux(b"Ml")
+    };
+    return r;
+}
+
 impl ReadModifications
 {
+
     pub fn from_bam_record(record: &bam::Record) -> Option<Self> {
         
         // records that are missing the SEQ field cannot be processed
@@ -143,8 +161,8 @@ impl ReadModifications
         }
 
         // do I need to nest these?
-        if let Ok(Aux::String(mm_str)) = record.aux(b"Mm") {
-            if let Ok(Aux::ArrayU8(probability_array)) = record.aux(b"Ml") {
+        if let Ok(Aux::String(mm_str)) = get_mm_tag(record) {
+            if let Ok(Aux::ArrayU8(probability_array)) = get_ml_tag(record) {
 
                 // TODO: handle multiple mods
                 if mm_str.matches(';').count() != 1 {
