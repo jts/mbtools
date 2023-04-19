@@ -279,6 +279,22 @@ fn main() {
                     .required(true)
                     .index(1)
                     .help("the input bam file to process"))
+                .arg(Arg::with_name("reference-genome")
+                    .short("g")
+                    .long("reference-genome")
+                    .takes_value(true)
+                    .required(false)
+                    .help("path to reference genome"))
+                .arg(Arg::with_name("cpg")
+                    .long("cpg")
+                    .takes_value(false)
+                    .required(false)
+                    .help("only include calls at CpG dinucleotides"))
+                .arg(Arg::with_name("read-end-filter")
+                    .short("f")
+                    .long("read-end-filter")
+                    .takes_value(true)
+                    .help("Ignore calls within f many bases from the read end. Useful for cfDNA analysis"))
                 .arg(Arg::with_name("region-bed")
                     .short("r")
                     .long("region-bed")
@@ -338,9 +354,13 @@ fn main() {
     if let Some(matches) = matches.subcommand_matches("read-region-frequency") {
 
         // TODO: set to nanopolish default LLR
+        let read_end_filter = value_t!(matches, "read-end-filter", usize).unwrap_or(0);
         calculate_read_region_frequency(calling_threshold,
                                     matches.value_of("region-bed").unwrap(),
-                                    matches.value_of("input-bam").unwrap())
+                                    matches.value_of("input-bam").unwrap(),
+                                   matches.is_present("cpg"),
+                                   matches.value_of("reference-genome").unwrap_or(""),
+                                   read_end_filter)
     }
     if let Some(matches) = matches.subcommand_matches("read-frequency") {
 
@@ -522,7 +542,18 @@ fn interval_tree_from_bed(region_bed: &str, header_view: bam::HeaderView) -> (Ha
     (interval_trees, region_data)
 }
 
-fn calculate_read_region_frequency(threshold: f64, region_bed: &str, input_bam: &str) {
+fn calculate_read_region_frequency(threshold: f64, region_bed: &str, input_bam: &str, 
+                              filter_to_cpg: bool, 
+                              reference_genome: &str,
+                              read_end_filter: usize) {
+    // Initialize reference genome for CpG filtering
+    let faidx = match filter_to_cpg {
+        true => Some(faidx::Reader::from_path(reference_genome).expect("could not read reference genome:")),
+        false => None
+    };
+    let mut curr_chromosome_id = -1;
+    let mut curr_chromosome_seq = String::new();
+    let mut curr_chromosome_length = 0;
 
     eprintln!("calculating read modifications with t:{} on file {}\n Modifications filtered to those within the regions of {}", threshold, input_bam, region_bed);
     println!("read_name\tchromosome\tstart_position\tend_position\talignment_length\tstrand\tmapping_quality\ttotal_calls\tmodified_calls\tmodification_frequency");
@@ -540,13 +571,25 @@ fn calculate_read_region_frequency(threshold: f64, region_bed: &str, input_bam: 
         if record.is_unmapped() {
             continue;
         }
+
+        // Load chromosome from reference genome into memory if necessary
+        // if this record is on a chromosome we don't have in memory, load it
+        if filter_to_cpg && record.tid() != curr_chromosome_id {
+            let contig = String::from_utf8_lossy(header_view.tid2name(record.tid() as u32));
+            curr_chromosome_length = header_view.target_len(record.tid() as u32).unwrap() as usize;
+            
+            curr_chromosome_id = record.tid();
+            curr_chromosome_seq = faidx.as_ref().expect("faidx not found").fetch_seq_string(contig, 0, curr_chromosome_length).unwrap();
+            curr_chromosome_seq.make_ascii_uppercase();
+        }
         // Check if the read overlaps any of the regions
         // for every region the read overlaps, we write a record for that region
         // counting only the modifications calls in that region
         let tid = record.tid() as u32;
         if let Some(tree) = interval_trees.get(&tid) {
-            let start = record.pos() as usize;
+            let start = record.reference_start() as usize;
             let end = record.reference_end() as usize;
+            let read_length = record.seq_len();
             if let Some(rm) = ReadModifications::from_bam_record(&record) {
                 for region in tree.query(start..end) {
                      let mut total_calls = 0;
@@ -558,6 +601,25 @@ fn calculate_read_region_frequency(threshold: f64, region_bed: &str, input_bam: 
                      for call in &rm.modification_calls {
                         if call.is_confident(threshold) && call.reference_index.is_some() {
                             let reference_position = call.reference_index.unwrap().clone();
+
+                            // End trim filter
+                            if call.read_index < read_end_filter || call.read_index > read_length - read_end_filter {
+                                continue;
+                            }
+                            
+                            // For the cpg filter
+                            let mut motif_position = reference_position;
+                            if rm.strand == '-' && reference_position > 0 {
+                                motif_position -= 1;
+                            }
+                            // Check if the modification call is on a CpG
+                            if filter_to_cpg && 
+                                ( rm.strand == '+' || reference_position > 0 ) &&
+                                motif_position < curr_chromosome_length - 1 && 
+                                &curr_chromosome_seq[motif_position..motif_position+2] != "CG" {
+                                continue
+                            }
+                            // Check if modification call is in the atlas
                             if reference_position >= start_position && reference_position <= end_position {
                                 total_calls += 1;
                                 total_modified += call.is_modified() as usize;
@@ -593,7 +655,7 @@ fn calculate_region_frequency(call_threshold: f64,
                               reference_genome: &str) {
     eprintln!("calculating modification frequency for regions from {} on file {}", region_bed, input_bam);
     let faidx = match filter_to_cpg {
-        true => Some(faidx::Reader::from_path(reference_genome).expect("Could not read reference genome:")),
+        true => Some(faidx::Reader::from_path(reference_genome).expect("could not read reference genome:")),
         false => None
     };
     
